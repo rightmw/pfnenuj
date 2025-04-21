@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         (VIP) PEFL Features: Ненужные
 // @namespace    http://tampermonkey.net/
-// @version      1.11
+// @version      1.12
 // @description  Добавляет расширенный функционал для страницы ненужных
 // @author       Вы
 // @match        *://*/nenuj.php?t=scout*
@@ -20,6 +20,12 @@
     }
 
     log('Скрипт запущен');
+
+    // Функция для извлечения ID игрока из URL
+    function extractPlayerIdFromUrl(url) {
+        const match = url.match(/[?&]j=(\d+)/);
+        return match ? match[1] : null;
+    }
 
     // Создаем контейнер для времени с флекс-разметкой
     const timeContainer = document.createElement('div');
@@ -134,15 +140,49 @@
         return contractString;
     }
 
+    // Функция для извлечения ссылки "убрать"
+    function extractRemoveLink(element) {
+        // Ищем ссылку с текстом "убрать"
+        const links = element.querySelectorAll('a');
+        for (let i = 0; i < links.length; i++) {
+            if (links[i].textContent.trim() === 'убрать') {
+                return links[i].getAttribute('href');
+            }
+        }
+        return null; // Не найдено
+    }
+
+    // Функция для извлечения значения интереса
+    function extractInterest(element) {
+        // Ищем элемент с ID "td4", содержащий информацию об интересе
+        const interestCell = element.querySelector('td#td4');
+        if (interestCell) {
+            // Извлекаем число в скобках из текста
+            const match = interestCell.textContent.match(/\((\d+)\)/);
+            if (match && match[1]) {
+                return parseInt(match[1], 10);
+            }
+        }
+        return null; // Не найдено
+    }
+
     // Функция для получения данных профиля игрока
     async function getPlayerProfile(playerName, profileUrl) {
-        // Проверяем, есть ли данные в кэше
-        if (playerProfiles[playerName]) {
-            log(`Данные профиля для ${playerName} загружены из кэша`);
-            return playerProfiles[playerName];
+        // Извлекаем ID игрока из URL
+        const playerId = extractPlayerIdFromUrl(profileUrl);
+
+        if (!playerId) {
+            log(`Не удалось извлечь ID для игрока ${playerName} из URL ${profileUrl}`);
+            return null;
         }
 
-        log(`Получение данных профиля для ${playerName} из ${profileUrl}`);
+        // Проверяем, есть ли данные в кэше по ID
+        if (playerProfiles[playerId]) {
+            log(`Данные профиля для игрока ${playerName} (ID: ${playerId}) загружены из кэша`);
+            return playerProfiles[playerId];
+        }
+
+        log(`Получение данных профиля для ${playerName} (ID: ${playerId}) из ${profileUrl}`);
 
         // Добавляем задержку перед каждым запросом
         await delay(500 * requestCounter);
@@ -184,6 +224,8 @@
 
                             // Извлекаем данные профиля
                             const playerData = {
+                                // Сохраняем имя игрока
+                                name: playerName,
                                 // Возраст (только число)
                                 age: age,
                                 // Позиция
@@ -195,13 +237,17 @@
                                 // Контракт (только сумма)
                                 contract: contract,
                                 // ID флага
-                                flagId: extractFlagId(tempDiv)
+                                flagId: extractFlagId(tempDiv),
+                                // Ссылка "убрать"
+                                removeLink: extractRemoveLink(tempDiv),
+                                // Значение интереса
+                                interest: extractInterest(tempDiv)
                             };
 
                             log(`Данные профиля для ${playerName}:`, playerData);
 
                             // Сохраняем данные в кэш
-                            playerProfiles[playerName] = playerData;
+                            playerProfiles[playerId] = playerData;
                             localStorage.setItem('playerProfiles', JSON.stringify(playerProfiles));
 
                             resolve(playerData);
@@ -288,6 +334,48 @@
         }
 
         return null; // Не найдено
+    }
+
+    // Добавляем функцию для фонового удаления игрока
+    function removePlayerBackground(removeLink, rowElement) {
+        log('Фоновое удаление игрока по ссылке:', removeLink);
+
+        // Формируем полный URL, если это относительный путь
+        let fullUrl = removeLink;
+        if (removeLink.startsWith('/')) {
+            fullUrl = window.location.origin + removeLink;
+        } else if (!removeLink.startsWith('http')) {
+            fullUrl = window.location.origin + '/' + removeLink;
+        }
+
+        // Выполняем запрос для удаления игрока
+        GM_xmlhttpRequest({
+            method: 'GET',
+            url: fullUrl,
+            onload: function(response) {
+                if (response.status === 200) {
+                    log('Игрок успешно удален');
+
+                    // Анимация удаления строки
+                    rowElement.style.transition = 'opacity 0.5s ease-out';
+                    rowElement.style.opacity = '0';
+
+                    // Удаляем строку после завершения анимации
+                    setTimeout(function() {
+                        if (rowElement && rowElement.parentNode) {
+                            rowElement.parentNode.removeChild(rowElement);
+                        }
+                    }, 500);
+                } else {
+                    log('Ошибка при удалении игрока:', response.status);
+                    alert('Ошибка при удалении игрока. Попробуйте перезагрузить страницу и повторить попытку.');
+                }
+            },
+            onerror: function(error) {
+                log('Ошибка при удалении игрока:', error);
+                alert('Ошибка при удалении игрока. Проверьте ваше интернет-соединение и повторите попытку.');
+            }
+        });
     }
 
     tables.forEach(table => {
@@ -543,7 +631,8 @@
         headerRow.appendChild(document.createElement('td')).innerHTML = '<b>Позиция</b>';
         headerRow.appendChild(document.createElement('td')).innerHTML = '<b>Номинал</b>';
         headerRow.appendChild(document.createElement('td')).innerHTML = '<b>Контракт</b>';
-        headerRow.appendChild(document.createElement('td')).innerHTML = ''; // Для "2 ИД"
+        headerRow.appendChild(document.createElement('td')).innerHTML = '<b>Интерес</b>';
+        headerRow.appendChild(document.createElement('td')).innerHTML = '<b>ИД</b>'; // Для "2 ИД"
         headerRow.appendChild(document.createElement('td')).innerHTML = '<b>Макс. ставка</b>';
         headerRow.appendChild(document.createElement('td')).innerHTML = '<b>Кол-во ставок</b>';
         headerRow.appendChild(document.createElement('td')).innerHTML = '<b>Хор. контракт</b>';
@@ -686,9 +775,11 @@
             const playerName = playerLink.textContent.trim();
             const profileUrl = playerLink.getAttribute('href');
 
+            // Проверяем, отмечен ли уже этот игрок в localStorage по ID
+            const playerId = extractPlayerIdFromUrl(profileUrl);
             // Проверяем, отмечен ли уже этот игрок в localStorage
             const markedPlayers = JSON.parse(localStorage.getItem('markedPlayers') || '{}');
-            const isMarked = markedPlayers[playerName] === true;
+            const isMarked = playerId && markedPlayers[playerId] === true;
 
             // Применяем стиль круга, если игрок отмечен
             if (isMarked) {
@@ -700,16 +791,22 @@
                 // Получаем текущих отмеченных игроков
                 const currentMarkedPlayers = JSON.parse(localStorage.getItem('markedPlayers') || '{}');
 
-                // Переключаем состояние отметки
-                if (currentMarkedPlayers[playerName]) {
+                const clickedPlayerId = extractPlayerIdFromUrl(profileUrl);
+                if (!clickedPlayerId) {
+                    log(`Не удалось извлечь ID для игрока ${playerName}`);
+                    return;
+                }
+
+                // Переключаем состояние отметки по ID
+                if (currentMarkedPlayers[clickedPlayerId]) {
                     // Убираем отметку
-                    delete currentMarkedPlayers[playerName];
+                    delete currentMarkedPlayers[clickedPlayerId];
                     this.style.borderRadius = '';
                     this.style.border = '1px solid #ccc';
                     this.style.backgroundColor = '';
                 } else {
                     // Добавляем отметку
-                    currentMarkedPlayers[playerName] = true;
+                    currentMarkedPlayers[clickedPlayerId] = true;
                     this.style.backgroundColor = '#ffeecc';
                 }
 
@@ -757,6 +854,12 @@
             contractPlayerCell.style.textAlign = 'center';
             contractPlayerCell.textContent = 'Загрузка...';
 
+            const interestCell = document.createElement('td');
+            interestCell.style.border = '1px solid #ccc';
+            interestCell.style.padding = '3px';
+            interestCell.style.textAlign = 'center';
+            interestCell.textContent = 'Загрузка...';
+
             // Добавляем ячейку для количества "Отправлено"
             const sentCell = document.createElement('td');
             sentCell.style.border = '1px solid #ccc';
@@ -775,6 +878,7 @@
             row.insertBefore(positionCell, ageCell.nextSibling);
             row.insertBefore(valueCell, positionCell.nextSibling);
             row.insertBefore(contractPlayerCell, valueCell.nextSibling);
+            row.insertBefore(interestCell, contractPlayerCell.nextSibling);
 
             // Получаем данные профиля
             getPlayerProfile(playerName, profileUrl).then(profileData => {
@@ -793,12 +897,43 @@
                         nameCell.insertBefore(flagImg, nameCell.firstChild);
                     }
 
+                    // Добавляем кнопку "x" для удаления
+                    if (profileData.removeLink) {
+                        const removeButton = document.createElement('span');
+                        removeButton.textContent = ' x';
+                        removeButton.style.color = 'red';
+                        removeButton.style.fontWeight = 'bold';
+                        removeButton.style.cursor = 'pointer';
+                        removeButton.style.marginLeft = '5px';
+                        removeButton.title = 'Удалить игрока';
+
+                        // Обработчик клика
+                        removeButton.addEventListener('click', function(event) {
+                            event.preventDefault();
+                            event.stopPropagation();
+
+                            if (confirm(`Удалить игрока ${playerName} из листка скаута?`)) {
+                                removePlayerBackground(profileData.removeLink, row);
+                            }
+                        });
+
+                        nameCell.appendChild(removeButton);
+                    }
+
                     // Заполняем ячейки данными
                     deadlineCell.textContent = profileData.deadline;
                     ageCell.textContent = profileData.age;
                     positionCell.textContent = profileData.position;
                     valueCell.textContent = profileData.value;
                     contractPlayerCell.textContent = profileData.contract;
+
+                    // Заполняем ячейку интереса
+                    if (profileData.interest !== null && profileData.interest !== undefined) {
+                        interestCell.textContent = profileData.interest;
+                    } else {
+                        interestCell.textContent = '—';
+                        interestCell.style.color = '#999'; // Серый цвет для прочерка
+                    }
                 }
             });
 
@@ -808,7 +943,7 @@
                 bidContractCell.textContent = '...';
 
                 // Находим ячейку с максимальной ставкой (теперь она будет дальше из-за добавленных ячеек)
-                const maxBidCellIndex = 8; // Индекс ячейки с максимальной ставкой после добавления новых ячеек
+                const maxBidCellIndex = 9; // Индекс ячейки с максимальной ставкой после добавления новых ячеек
                 const maxBidCell = row.querySelector(`td:nth-child(${maxBidCellIndex + 1})`); // +1 из-за добавленной ячейки нумерации
 
                 // Ищем ссылку "Ход торгов" в строке
@@ -932,6 +1067,7 @@
         clearCacheButton.addEventListener('click', function() {
             if (confirm('Вы уверены, что хотите очистить кэш профилей игроков? Данные будут загружены заново при следующем обновлении страницы.')) {
                 localStorage.removeItem('playerProfiles');
+                localStorage.removeItem('markedPlayers'); // Очищаем также и отмеченных игроков
                 alert('Кэш профилей очищен. Обновите страницу для загрузки данных заново.');
                 location.reload();
             }
@@ -948,7 +1084,7 @@
 
     const forumLink = document.createElement('a');
     forumLink.href = '/forums.php?m=posts&p=16393540&arch=#16393540';
-    forumLink.textContent = 'Топ скрипта на форуме';
+    forumLink.textContent = 'Топ аддона на форуме';
     forumLink.target = '_blank'; // Открывать в новом окне
     forumLink.style.textDecoration = 'none';
     forumLink.style.color = '#445577';
